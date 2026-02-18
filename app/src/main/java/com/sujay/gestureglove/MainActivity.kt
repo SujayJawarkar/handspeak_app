@@ -1,67 +1,165 @@
 package com.sujay.gestureglove
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothSocket
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.os.AsyncTask
 import android.os.Build
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
-import android.widget.Button
-import android.widget.TextView
+import android.util.Log
 import android.widget.Toast
-import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import com.sujay.gestureglove.ui.theme.GestureGloveAppTheme
+import kotlinx.coroutines.*
 import java.io.IOException
-import java.io.InputStream
+import java.text.SimpleDateFormat
 import java.util.*
 
-class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
+private const val TAG = "GestureGlove"
 
-    private lateinit var statusText: TextView
-    private lateinit var gestureText: TextView
-    private lateinit var connectButton: Button
-    private lateinit var speakButton: Button
+// Custom Colors based on the designs
+val BgBeige = Color(0xFFF5F0E1)
+val MutedGreen = Color(0xFFADC1B1)
+val MutedBlue = Color(0xFFB8D0EB)
+val DarkBlue = Color(0xFF1B263B)
+val MutedRed = Color(0xFFE57373)
+val SoftRed = Color(0xFFEF9A9A)
+
+data class HistoryItem(
+    val id: Long = System.currentTimeMillis(),
+    val text: String,
+    val time: String
+)
+
+enum class Screen { Home, History, Settings }
+
+class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     private var bluetoothAdapter: BluetoothAdapter? = null
     private var bluetoothSocket: BluetoothSocket? = null
     private var textToSpeech: TextToSpeech? = null
-    private var isConnected = false
+    private var receivingJob: Job? = null
 
-    // ESP32 Bluetooth device name
     private val deviceName = "GestureGlove"
     private val uuid = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
 
-    // Gesture mapping
-    private val gestureMap = mapOf(
-        "HELLO" to "Hello",
-        "THANK" to "Thank you",
-        "YES" to "Yes",
-        "NO" to "No",
-        "HELP" to "Help me",
-        "WATER" to "I need water"
-    )
+    private var gestureMap: Map<String, String> = emptyMap()
+
+    // App State
+    private var currentScreen by mutableStateOf(Screen.Home)
+    private var connectionStatus by mutableStateOf("Disconnected")
+    private var currentGesture by mutableStateOf("Recognized text will appear here")
+    private var isConnected by mutableStateOf(false)
+    private var isConnecting by mutableStateOf(false)
+    
+    // History State
+    private val historyList = mutableStateListOf<HistoryItem>()
+
+    // Settings State
+    private var volume by mutableStateOf(0.8f)
+    private var speechSpeed by mutableStateOf(1.0f)
+    private var language by mutableStateOf("English")
+    private var voiceType by mutableStateOf("Male")
+    private var fontSize by mutableStateOf("Large")
+    private var isDarkTheme by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
 
-        initializeViews()
+        loadGestureMap()
         initializeBluetooth()
         initializeTextToSpeech()
-        setupClickListeners()
         checkPermissions()
+
+        setContent {
+            GestureGloveAppTheme(darkTheme = isDarkTheme) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = BgBeige
+                ) {
+                    when (currentScreen) {
+                        Screen.Home -> HandSpeakScreen(
+                            status = connectionStatus,
+                            gesture = currentGesture,
+                            connected = isConnected,
+                            connecting = isConnecting,
+                            volume = volume,
+                            speechSpeed = speechSpeed,
+                            onVolumeChange = { volume = it },
+                            onSpeechSpeedChange = { speechSpeed = it },
+                            onConnectClick = { if (!isConnected) connectToDevice() else disconnect() },
+                            onSpeakClick = { if (currentGesture != "Recognized text will appear here") speakText(currentGesture) },
+                            onNavigate = { currentScreen = it }
+                        )
+                        Screen.History -> HistoryScreen(
+                            historyItems = historyList,
+                            onBack = { currentScreen = Screen.Home },
+                            onDelete = { historyList.remove(it) },
+                            onSpeak = { speakText(it.text) },
+                            onClearAll = { historyList.clear() }
+                        )
+                        Screen.Settings -> SettingsScreen(
+                            language = language,
+                            voiceType = voiceType,
+                            fontSize = fontSize,
+                            theme = isDarkTheme,
+                            onLanguageChange = { language = it },
+                            onVoiceTypeChange = { voiceType = it },
+                            onFontSizeChange = { fontSize = it },
+                            onThemeChange = { isDarkTheme = it },
+                            onReset = {
+                                language = "English"
+                                voiceType = "Male"
+                                fontSize = "Large"
+                                isDarkTheme = false
+                                volume = 0.8f
+                                speechSpeed = 1.0f
+                            },
+                            onBack = { currentScreen = Screen.Home }
+                        )
+                    }
+                }
+            }
+        }
     }
 
-    private fun initializeViews() {
-        statusText = findViewById(R.id.statusText)
-        gestureText = findViewById(R.id.gestureText)
-        connectButton = findViewById(R.id.connectButton)
-        speakButton = findViewById(R.id.speakButton)
+    private fun loadGestureMap() {
+        try {
+            val keys = resources.getStringArray(R.array.gesture_keys)
+            val values = resources.getStringArray(R.array.gesture_values)
+            gestureMap = keys.zip(values).toMap()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error loading gesture map", e)
+        }
     }
 
     private fun initializeBluetooth() {
@@ -76,155 +174,426 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         textToSpeech = TextToSpeech(this, this)
     }
 
-    private fun setupClickListeners() {
-        connectButton.setOnClickListener {
-            if (!isConnected) {
-                connectToDevice()
-            } else {
-                disconnect()
-            }
-        }
-
-        speakButton.setOnClickListener {
-            val text = gestureText.text.toString()
-            if (text != "No gesture detected") {
-                speakText(text)
-            }
-        }
-    }
-
     private fun checkPermissions() {
-        val permissions = arrayOf(
-            Manifest.permission.BLUETOOTH,
-            Manifest.permission.BLUETOOTH_ADMIN,
-            Manifest.permission.ACCESS_FINE_LOCATION
-        )
+        val permissions = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+            permissions.add(Manifest.permission.BLUETOOTH_SCAN)
+        } else {
+            permissions.add(Manifest.permission.BLUETOOTH)
+            permissions.add(Manifest.permission.BLUETOOTH_ADMIN)
+        }
 
-        val permissionsNeeded = permissions.filter {
+        val needed = permissions.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
 
-        if (permissionsNeeded.isNotEmpty()) {
-            ActivityCompat.requestPermissions(this, permissionsNeeded.toTypedArray(), 1)
+        if (needed.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, permissions.toTypedArray(), 1)
         }
     }
 
-    private fun connectToDevice() {
+    private fun hasPermission(permission: String): Boolean {
+        return ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+    }
 
+    @SuppressLint("MissingPermission")
+    private fun connectToDevice() {
         if (bluetoothAdapter?.isEnabled != true) {
-            val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
-            startActivityForResult(enableBtIntent, 2)
+            startActivityForResult(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE), 2)
             return
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.BLUETOOTH_CONNECT), 1)
-                return
-            }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
+            checkPermissions()
+            return
         }
 
-
-        val pairedDevices = bluetoothAdapter?.bondedDevices
-        val device = pairedDevices?.find { it.name == deviceName }
-
+        val device = bluetoothAdapter?.bondedDevices?.find { it.name == deviceName }
         if (device != null) {
-            ConnectTask().execute(device)
+            performConnection(device)
         } else {
             Toast.makeText(this, "Device $deviceName not paired", Toast.LENGTH_LONG).show()
         }
     }
 
-    private inner class ConnectTask : AsyncTask<BluetoothDevice, Void, Boolean>() {
-        override fun doInBackground(vararg devices: BluetoothDevice): Boolean {
-            return try {
-                val device = devices[0]
-                bluetoothSocket = device.createRfcommSocketToServiceRecord(uuid)
-                bluetoothSocket?.connect()
-                true
-            } catch (e: IOException) {
-                e.printStackTrace()
-                false
-            }
-        }
+    @SuppressLint("MissingPermission")
+    private fun performConnection(device: BluetoothDevice) {
+        lifecycleScope.launch {
+            isConnecting = true
+            connectionStatus = "Connecting..."
 
-        override fun onPostExecute(success: Boolean) {
+            val success = withContext(Dispatchers.IO) {
+                try {
+                    bluetoothSocket = device.createRfcommSocketToServiceRecord(uuid)
+                    bluetoothSocket?.connect()
+                    true
+                } catch (e: Exception) {
+                    Log.e(TAG, "Connection failed", e)
+                    false
+                }
+            }
+
+            isConnecting = false
             if (success) {
                 isConnected = true
-                statusText.text = "Status: Connected"
-                connectButton.text = "Disconnect"
-                speakButton.isEnabled = true
+                connectionStatus = "Connected"
                 startDataReceiving()
-                Toast.makeText(this@MainActivity, "Connected to glove", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity, "Connected to $deviceName", Toast.LENGTH_SHORT).show()
             } else {
-                Toast.makeText(this@MainActivity, "Connection failed", Toast.LENGTH_LONG).show()
+                connectionStatus = "Failed to connect"
+                cleanup()
             }
         }
     }
 
     private fun startDataReceiving() {
-        Thread {
+        receivingJob = lifecycleScope.launch(Dispatchers.IO) {
             val buffer = ByteArray(1024)
-            var bytes: Int
-
-            while (isConnected) {
+            while (isActive && isConnected) {
                 try {
-                    val inputStream: InputStream = bluetoothSocket?.inputStream ?: break
-                    bytes = inputStream.read(buffer)
-                    val receivedData = String(buffer, 0, bytes).trim()
-
-                    runOnUiThread {
-                        processGestureData(receivedData)
+                    val socket = bluetoothSocket
+                    if (socket == null || !socket.isConnected) {
+                        throw IOException("Socket disconnected")
                     }
-                } catch (e: IOException) {
-                    runOnUiThread {
-                        disconnect()
+                    val bytes = socket.inputStream?.read(buffer) ?: -1
+                    if (bytes > 0) {
+                        val rawData = String(buffer, 0, bytes).trim()
+                        if (rawData.isNotEmpty()) {
+                            withContext(Dispatchers.Main) {
+                                processGestureData(rawData)
+                            }
+                        }
+                    } else if (bytes == -1) {
+                        throw IOException("End of stream reached")
+                    }
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) { 
+                        connectionStatus = "Connection Lost"
+                        disconnect() 
                     }
                     break
                 }
+                delay(100)
             }
-        }.start()
+        }
     }
 
     private fun processGestureData(rawData: String) {
         val gesture = gestureMap[rawData] ?: "Unknown: $rawData"
-        gestureText.text = gesture
-
-        // Auto-speak recognized gestures
+        currentGesture = gesture
         if (gestureMap.containsKey(rawData)) {
             speakText(gesture)
+            addToHistory(gesture)
         }
+    }
+
+    private fun addToHistory(text: String) {
+        val time = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date())
+        historyList.add(0, HistoryItem(text = text, time = time))
     }
 
     private fun disconnect() {
+        isConnected = false
+        receivingJob?.cancel()
+        cleanup()
+        if (connectionStatus != "Connection Lost") {
+            connectionStatus = "Disconnected"
+        }
+        currentGesture = "Recognized text will appear here"
+    }
+
+    private fun cleanup() {
         try {
-            isConnected = false
             bluetoothSocket?.close()
-            statusText.text = "Status: Disconnected"
-            connectButton.text = "Connect to Glove"
-            speakButton.isEnabled = false
-            gestureText.text = "No gesture detected"
-            Toast.makeText(this, "Disconnected", Toast.LENGTH_SHORT).show()
         } catch (e: IOException) {
-            e.printStackTrace()
+            Log.e(TAG, "Error closing socket", e)
+        } finally {
+            bluetoothSocket = null
         }
     }
 
-    // TextToSpeech Implementation
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
             textToSpeech?.language = Locale.getDefault()
-        } else {
-            Toast.makeText(this, "TTS initialization failed", Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun speakText(text: String) {
-        textToSpeech?.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
+        textToSpeech?.let { tts ->
+            tts.setSpeechRate(speechSpeed)
+            val params = Bundle()
+            params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume)
+            tts.speak(text, TextToSpeech.QUEUE_FLUSH, params, "GestureID")
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
         disconnect()
         textToSpeech?.shutdown()
+    }
+}
+
+@Composable
+fun HandSpeakScreen(
+    status: String,
+    gesture: String,
+    connected: Boolean,
+    connecting: Boolean,
+    volume: Float,
+    speechSpeed: Float,
+    onVolumeChange: (Float) -> Unit,
+    onSpeechSpeedChange: (Float) -> Unit,
+    onConnectClick: () -> Unit,
+    onSpeakClick: () -> Unit,
+    onNavigate: (Screen) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(BgBeige)
+            .padding(horizontal = 24.dp, vertical = 40.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = "HandSpeak",
+            style = MaterialTheme.typography.displaySmall,
+            fontFamily = FontFamily.Serif,
+            fontWeight = FontWeight.Bold,
+            color = DarkBlue
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Button(
+            onClick = onConnectClick,
+            colors = ButtonDefaults.buttonColors(containerColor = MutedGreen),
+            shape = RoundedCornerShape(50),
+            modifier = Modifier.width(180.dp),
+            contentPadding = PaddingValues(vertical = 8.dp)
+        ) {
+            Icon(Icons.Default.PowerSettingsNew, null, tint = Color.Black, modifier = Modifier.size(20.dp))
+            Spacer(modifier = Modifier.width(12.dp))
+            Text(if (connecting) "Connecting..." else if (connected) "Disconnect" else "Connect", color = Color.Black)
+        }
+
+        Spacer(modifier = Modifier.height(40.dp))
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .clip(RoundedCornerShape(24.dp))
+                .background(MutedBlue)
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(Icons.Default.Mic, null, modifier = Modifier.size(48.dp), tint = DarkBlue)
+                Spacer(modifier = Modifier.height(24.dp))
+                Text(gesture, style = MaterialTheme.typography.bodyLarge, color = DarkBlue, textAlign = TextAlign.Center)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(40.dp))
+
+        Box(
+            modifier = Modifier
+                .size(100.dp)
+                .clip(CircleShape)
+                .background(MutedGreen)
+                .clickable(enabled = connected, onClick = onSpeakClick),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.Default.VolumeUp, null, modifier = Modifier.size(40.dp), tint = DarkBlue)
+        }
+
+        Spacer(modifier = Modifier.height(32.dp))
+
+        ControlSlider("Volume", volume, onVolumeChange)
+        ControlSlider("Speech Speed", speechSpeed, onSpeechSpeedChange, 0.5f..2.0f)
+
+        Spacer(modifier = Modifier.height(40.dp))
+
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
+            BottomCircleButton(Icons.Default.Home) { onNavigate(Screen.Home) }
+            BottomCircleButton(Icons.Default.History) { onNavigate(Screen.History) }
+            BottomCircleButton(Icons.Default.Settings) { onNavigate(Screen.Settings) }
+        }
+    }
+}
+
+@Composable
+fun HistoryScreen(
+    historyItems: List<HistoryItem>,
+    onBack: () -> Unit,
+    onDelete: (HistoryItem) -> Unit,
+    onSpeak: (HistoryItem) -> Unit,
+    onClearAll: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(BgBeige)
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("History", style = MaterialTheme.typography.displaySmall, fontFamily = FontFamily.Serif, color = DarkBlue)
+        
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .clip(RoundedCornerShape(24.dp))
+                .background(MutedBlue)
+                .padding(16.dp)
+        ) {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(historyItems) { item ->
+                    HistoryCard(item, onSpeak = { onSpeak(item) }, onDelete = { onDelete(item) })
+                }
+            }
+        }
+        
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        Button(
+            onClick = onClearAll,
+            colors = ButtonDefaults.buttonColors(containerColor = SoftRed),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth().height(56.dp)
+        ) {
+            Icon(Icons.Default.Delete, null, tint = Color.White)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Clear All History", color = Color.White, fontSize = 18.sp)
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+        Text("Back", modifier = Modifier.clickable { onBack() }, color = DarkBlue)
+    }
+}
+
+@Composable
+fun HistoryCard(item: HistoryItem, onSpeak: () -> Unit, onDelete: () -> Unit) {
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(item.text, fontWeight = FontWeight.Medium, fontSize = 16.sp, color = DarkBlue)
+                Text(item.time, fontSize = 12.sp, color = Color.Gray)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SmallCircleButton(Icons.Default.VolumeUp, MutedGreen, onSpeak)
+                SmallCircleButton(Icons.Default.Delete, SoftRed, onDelete)
+            }
+        }
+    }
+}
+
+@Composable
+fun SettingsScreen(
+    language: String,
+    voiceType: String,
+    fontSize: String,
+    theme: Boolean,
+    onLanguageChange: (String) -> Unit,
+    onVoiceTypeChange: (String) -> Unit,
+    onFontSizeChange: (String) -> Unit,
+    onThemeChange: (Boolean) -> Unit,
+    onReset: () -> Unit,
+    onBack: () -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxSize().background(BgBeige).padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("Settings", style = MaterialTheme.typography.displaySmall, fontFamily = FontFamily.Serif, color = DarkBlue)
+        
+        Spacer(modifier = Modifier.height(40.dp))
+        
+        SettingsDropdownRow("Language", language, listOf("English", "Hindi", "Spanish"), onLanguageChange)
+        SettingsDropdownRow("Voice Type", voiceType, listOf("Male", "Female"), onVoiceTypeChange)
+        SettingsDropdownRow("Font Size", fontSize, listOf("Small", "Medium", "Large"), onFontSizeChange)
+        
+        Row(
+            modifier = Modifier.fillMaxWidth().height(60.dp).padding(vertical = 8.dp).clip(RoundedCornerShape(12.dp)).background(Color.White).padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text("Theme", fontWeight = FontWeight.Bold, color = DarkBlue)
+            Switch(checked = theme, onCheckedChange = onThemeChange, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = MutedGreen))
+        }
+        
+        Spacer(modifier = Modifier.weight(1f))
+        
+        Text("Reset", modifier = Modifier.clickable { onReset() }, style = MaterialTheme.typography.displaySmall, fontFamily = FontFamily.Serif, color = DarkBlue)
+        Spacer(modifier = Modifier.height(24.dp))
+        Text("Back", modifier = Modifier.clickable { onBack() }, color = DarkBlue)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SettingsDropdownRow(label: String, selectedValue: String, options: List<String>, onValueChange: (String) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    
+    Row(
+        modifier = Modifier.fillMaxWidth().height(64.dp).padding(vertical = 4.dp).clip(RoundedCornerShape(12.dp)).background(Color.White).padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(label, fontWeight = FontWeight.Bold, color = DarkBlue)
+        
+        Box {
+            Surface(
+                onClick = { expanded = true },
+                shape = RoundedCornerShape(8.dp),
+                color = BgBeige.copy(alpha = 0.5f)
+            ) {
+                Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(selectedValue, fontSize = 14.sp)
+                    Icon(Icons.Default.ArrowDropDown, null)
+                }
+            }
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                options.forEach { option ->
+                    DropdownMenuItem(text = { Text(option) }, onClick = { onValueChange(option); expanded = false })
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ControlSlider(label: String, value: Float, onValueChange: (Float) -> Unit, range: ClosedFloatingPointRange<Float> = 0f..1f) {
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, modifier = Modifier.width(100.dp), style = MaterialTheme.typography.bodyMedium, color = Color.Black)
+        Slider(
+            value = value, onValueChange = onValueChange, valueRange = range, modifier = Modifier.weight(1f),
+            colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = DarkBlue.copy(alpha = 0.7f), inactiveTrackColor = MutedGreen)
+        )
+    }
+}
+
+@Composable
+fun BottomCircleButton(icon: ImageVector, onClick: () -> Unit) {
+    Surface(modifier = Modifier.size(50.dp).clickable { onClick() }, shape = CircleShape, color = Color.White, shadowElevation = 4.dp) {
+        Box(contentAlignment = Alignment.Center) { Icon(icon, null, tint = Color.Black, modifier = Modifier.size(24.dp)) }
+    }
+}
+
+@Composable
+fun SmallCircleButton(icon: ImageVector, color: Color, onClick: () -> Unit) {
+    Surface(modifier = Modifier.size(36.dp).clickable { onClick() }, shape = CircleShape, color = color) {
+        Box(contentAlignment = Alignment.Center) { Icon(icon, null, tint = Color.White, modifier = Modifier.size(20.dp)) }
     }
 }

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="gesture_keys">
+        <item>HELLO</item>
+        <item>THANK</item>
+        <item>YES</item>
+        <item>NO</item>
+        <item>HELP</item>
+        <item>WATER</item>
+    </string-array>
+
+    <string-array name="gesture_values">
+        <item>Hello</item>
+        <item>Thank you</item>
+        <item>Yes</item>
+        <item>No</item>
+        <item>Help me</item>
+        <item>I need water</item>
+    </string-array>
+</resources>
