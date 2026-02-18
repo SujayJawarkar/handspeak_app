@@ -22,6 +22,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -53,6 +55,7 @@ val MutedBlue = Color(0xFFB8D0EB)
 val DarkBlue = Color(0xFF1B263B)
 val MutedRed = Color(0xFFE57373)
 val SoftRed = Color(0xFFEF9A9A)
+val LightRed = Color(0xFFFFCDD2)
 
 data class HistoryItem(
     val id: Long = System.currentTimeMillis(),
@@ -117,7 +120,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                             onVolumeChange = { volume = it },
                             onSpeechSpeedChange = { speechSpeed = it },
                             onConnectClick = { if (!isConnected) connectToDevice() else disconnect() },
-                            onSpeakClick = { if (currentGesture != "Recognized text will appear here") speakText(currentGesture) },
+                            onRepeatClick = { if (currentGesture != "Recognized text will appear here") speakText(currentGesture) },
                             onNavigate = { currentScreen = it }
                         )
                         Screen.History -> HistoryScreen(
@@ -346,7 +349,7 @@ fun HandSpeakScreen(
     onVolumeChange: (Float) -> Unit,
     onSpeechSpeedChange: (Float) -> Unit,
     onConnectClick: () -> Unit,
-    onSpeakClick: () -> Unit,
+    onRepeatClick: () -> Unit,
     onNavigate: (Screen) -> Unit
 ) {
     Column(
@@ -368,7 +371,9 @@ fun HandSpeakScreen(
 
         Button(
             onClick = onConnectClick,
-            colors = ButtonDefaults.buttonColors(containerColor = MutedGreen),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (connected) LightRed else MutedGreen
+            ),
             shape = RoundedCornerShape(50),
             modifier = Modifier.width(180.dp),
             contentPadding = PaddingValues(vertical = 8.dp)
@@ -403,10 +408,10 @@ fun HandSpeakScreen(
                 .size(100.dp)
                 .clip(CircleShape)
                 .background(MutedGreen)
-                .clickable(enabled = connected, onClick = onSpeakClick),
+                .clickable(enabled = connected, onClick = onRepeatClick),
             contentAlignment = Alignment.Center
         ) {
-            Icon(Icons.Default.VolumeUp, null, modifier = Modifier.size(40.dp), tint = DarkBlue)
+            Icon(Icons.Default.Replay, null, modifier = Modifier.size(40.dp), tint = DarkBlue)
         }
 
         Spacer(modifier = Modifier.height(32.dp))
@@ -417,7 +422,7 @@ fun HandSpeakScreen(
         Spacer(modifier = Modifier.height(40.dp))
 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
-            BottomCircleButton(Icons.Default.Home) { onNavigate(Screen.Home) }
+            // Home button removed as requested
             BottomCircleButton(Icons.Default.History) { onNavigate(Screen.History) }
             BottomCircleButton(Icons.Default.Settings) { onNavigate(Screen.Settings) }
         }
@@ -436,10 +441,31 @@ fun HistoryScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(BgBeige)
-            .padding(24.dp),
+            .padding(24.dp, vertical = 40.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("History", style = MaterialTheme.typography.displaySmall, fontFamily = FontFamily.Serif, color = DarkBlue)
+        Box(modifier = Modifier.fillMaxWidth()) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .size(40.dp)
+                    .clickable { onBack() },
+                shape = CircleShape,
+                color = Color.White,
+                shadowElevation = 2.dp
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = DarkBlue, modifier = Modifier.size(24.dp))
+                }
+            }
+            Text(
+                "History",
+                modifier = Modifier.align(Alignment.Center),
+                style = MaterialTheme.typography.displaySmall,
+                fontFamily = FontFamily.Serif,
+                color = DarkBlue
+            )
+        }
         
         Spacer(modifier = Modifier.height(24.dp))
         
@@ -470,9 +496,6 @@ fun HistoryScreen(
             Spacer(modifier = Modifier.width(8.dp))
             Text("Clear All History", color = Color.White, fontSize = 18.sp)
         }
-
-        Spacer(modifier = Modifier.height(16.dp))
-        Text("Back", modifier = Modifier.clickable { onBack() }, color = DarkBlue)
     }
 }
 
@@ -492,7 +515,7 @@ fun HistoryCard(item: HistoryItem, onSpeak: () -> Unit, onDelete: () -> Unit) {
                 Text(item.time, fontSize = 12.sp, color = Color.Gray)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SmallCircleButton(Icons.Default.VolumeUp, MutedGreen, onSpeak)
+                SmallCircleButton(Icons.AutoMirrored.Filled.VolumeUp, MutedGreen, onSpeak)
                 SmallCircleButton(Icons.Default.Delete, SoftRed, onDelete)
             }
         }
@@ -513,10 +536,31 @@ fun SettingsScreen(
     onBack: () -> Unit
 ) {
     Column(
-        modifier = Modifier.fillMaxSize().background(BgBeige).padding(24.dp),
+        modifier = Modifier.fillMaxSize().background(BgBeige).padding(24.dp, vertical = 40.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("Settings", style = MaterialTheme.typography.displaySmall, fontFamily = FontFamily.Serif, color = DarkBlue)
+        Box(modifier = Modifier.fillMaxWidth()) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .size(40.dp)
+                    .clickable { onBack() },
+                shape = CircleShape,
+                color = Color.White,
+                shadowElevation = 2.dp
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = DarkBlue, modifier = Modifier.size(24.dp))
+                }
+            }
+            Text(
+                "Settings",
+                modifier = Modifier.align(Alignment.Center),
+                style = MaterialTheme.typography.displaySmall,
+                fontFamily = FontFamily.Serif,
+                color = DarkBlue
+            )
+        }
         
         Spacer(modifier = Modifier.height(40.dp))
         
@@ -536,8 +580,6 @@ fun SettingsScreen(
         Spacer(modifier = Modifier.weight(1f))
         
         Text("Reset", modifier = Modifier.clickable { onReset() }, style = MaterialTheme.typography.displaySmall, fontFamily = FontFamily.Serif, color = DarkBlue)
-        Spacer(modifier = Modifier.height(24.dp))
-        Text("Back", modifier = Modifier.clickable { onBack() }, color = DarkBlue)
     }
 }
 
