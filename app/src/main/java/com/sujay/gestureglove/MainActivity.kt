@@ -5,7 +5,9 @@ import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothSocket
+import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -41,6 +43,8 @@ import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import com.sujay.gestureglove.ui.theme.GestureGloveAppTheme
 import kotlinx.coroutines.*
 import java.io.IOException
@@ -48,6 +52,7 @@ import java.text.SimpleDateFormat
 import java.util.*
 
 private const val TAG = "GestureGlove"
+private const val PREFS_NAME = "HandSpeakPrefs"
 
 // Custom Colors based on the designs
 val BgBeige = Color(0xFFF5F0E1)
@@ -72,6 +77,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private var bluetoothSocket: BluetoothSocket? = null
     private var textToSpeech: TextToSpeech? = null
     private var receivingJob: Job? = null
+    private lateinit var prefs: SharedPreferences
+    private val gson = Gson()
 
     private val deviceName = "GestureGlove"
     private val uuid = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
@@ -99,10 +106,13 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     // Speech automation states
     private var lastSpokenGesture: String? = null
     private var lastSpeechTime: Long = 0
-    private val speechCooldown = 2000L // 2 seconds cooldown for repeating same gesture
+    private val speechCooldown = 2000L // 2 seconds cooldown
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        loadPersistentData()
 
         loadGestureMap()
         initializeBluetooth()
@@ -111,14 +121,13 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
         setContent {
             GestureGloveAppTheme(darkTheme = isDarkTheme) {
-                // Handle system back gesture
                 BackHandler(enabled = currentScreen != Screen.Home) {
                     currentScreen = Screen.Home
                 }
 
                 Surface(
                     modifier = Modifier.fillMaxSize(),
-                    color = BgBeige
+                    color = MaterialTheme.colorScheme.background
                 ) {
                     when (currentScreen) {
                         Screen.Home -> HandSpeakScreen(
@@ -128,8 +137,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                             connecting = isConnecting,
                             volume = volume,
                             speechSpeed = speechSpeed,
-                            onVolumeChange = { volume = it },
-                            onSpeechSpeedChange = { speechSpeed = it },
+                            onVolumeChange = { volume = it; saveSettings() },
+                            onSpeechSpeedChange = { speechSpeed = it; saveSettings() },
                             onConnectClick = { if (!isConnected) connectToDevice() else disconnect() },
                             onRepeatClick = { if (currentGesture != "Recognized text will appear here") speakText(currentGesture) },
                             onNavigate = { currentScreen = it }
@@ -137,19 +146,19 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                         Screen.History -> HistoryScreen(
                             historyItems = historyList,
                             onBack = { currentScreen = Screen.Home },
-                            onDelete = { historyList.remove(it) },
+                            onDelete = { historyList.remove(it); saveHistory() },
                             onSpeak = { speakText(it.text) },
-                            onClearAll = { historyList.clear() }
+                            onClearAll = { historyList.clear(); saveHistory() }
                         )
                         Screen.Settings -> SettingsScreen(
                             language = language,
                             voiceType = voiceType,
                             fontSize = fontSize,
                             theme = isDarkTheme,
-                            onLanguageChange = { language = it },
-                            onVoiceTypeChange = { voiceType = it },
-                            onFontSizeChange = { fontSize = it },
-                            onThemeChange = { isDarkTheme = it },
+                            onLanguageChange = { language = it; saveSettings() },
+                            onVoiceTypeChange = { voiceType = it; saveSettings() },
+                            onFontSizeChange = { fontSize = it; saveSettings() },
+                            onThemeChange = { isDarkTheme = it; saveSettings() },
                             onReset = {
                                 language = "English"
                                 voiceType = "Male"
@@ -157,6 +166,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                 isDarkTheme = false
                                 volume = 0.8f
                                 speechSpeed = 1.0f
+                                saveSettings()
                             },
                             onBack = { currentScreen = Screen.Home }
                         )
@@ -164,6 +174,42 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                 }
             }
         }
+    }
+
+    private fun loadPersistentData() {
+        // Load Settings
+        volume = prefs.getFloat("volume", 0.8f)
+        speechSpeed = prefs.getFloat("speechSpeed", 1.0f)
+        language = prefs.getString("language", "English") ?: "English"
+        voiceType = prefs.getString("voiceType", "Male") ?: "Male"
+        fontSize = prefs.getString("fontSize", "Large") ?: "Large"
+        isDarkTheme = prefs.getBoolean("isDarkTheme", false)
+
+        // Load History
+        val historyJson = prefs.getString("history", null)
+        if (historyJson != null) {
+            val type = object : TypeToken<List<HistoryItem>>() {}.type
+            val items: List<HistoryItem> = gson.fromJson(historyJson, type)
+            historyList.clear()
+            historyList.addAll(items)
+        }
+    }
+
+    private fun saveSettings() {
+        prefs.edit().apply {
+            putFloat("volume", volume)
+            putFloat("speechSpeed", speechSpeed)
+            putString("language", language)
+            putString("voiceType", voiceType)
+            putString("fontSize", fontSize)
+            putBoolean("isDarkTheme", isDarkTheme)
+            apply()
+        }
+    }
+
+    private fun saveHistory() {
+        val historyJson = gson.toJson(historyList.toList())
+        prefs.edit().putString("history", historyJson).apply()
     }
 
     private fun loadGestureMap() {
@@ -299,15 +345,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         currentGesture = gesture
 
         val currentTime = System.currentTimeMillis()
-        // Automatic Speech Logic: speak if it's a new gesture or enough time has passed
         if (gesture != lastSpokenGesture || (currentTime - lastSpeechTime > speechCooldown)) {
             speakText(gesture)
-            
-            // Only add to history if it's a recognized gesture
-            if (gestureMap.containsKey(cleanData)) {
-                addToHistory(gesture)
-            }
-            
+            addToHistory(gesture)
             lastSpokenGesture = gesture
             lastSpeechTime = currentTime
         }
@@ -316,6 +356,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private fun addToHistory(text: String) {
         val time = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date())
         historyList.add(0, HistoryItem(text = text, time = time))
+        saveHistory() // Auto-save when new item added
     }
 
     private fun disconnect() {
@@ -350,7 +391,6 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             tts.setSpeechRate(speechSpeed)
             val params = Bundle()
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume)
-            // Use QUEUE_ADD to speak continuously without interrupting previous text
             tts.speak(text, TextToSpeech.QUEUE_ADD, params, "GestureID")
         }
     }
@@ -379,7 +419,7 @@ fun HandSpeakScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(BgBeige)
+            .background(MaterialTheme.colorScheme.background)
             .padding(horizontal = 24.dp, vertical = 40.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -388,7 +428,7 @@ fun HandSpeakScreen(
             style = MaterialTheme.typography.displaySmall,
             fontFamily = FontFamily.Serif,
             fontWeight = FontWeight.Bold,
-            color = DarkBlue
+            color = MaterialTheme.colorScheme.onBackground
         )
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -414,14 +454,14 @@ fun HandSpeakScreen(
                 .fillMaxWidth()
                 .weight(1f)
                 .clip(RoundedCornerShape(24.dp))
-                .background(MutedBlue)
+                .background(MaterialTheme.colorScheme.surfaceVariant)
                 .padding(24.dp),
             contentAlignment = Alignment.Center
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(Icons.Default.Mic, null, modifier = Modifier.size(48.dp), tint = DarkBlue)
+                Icon(Icons.Default.Mic, null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.onBackground)
                 Spacer(modifier = Modifier.height(24.dp))
-                Text(gesture, style = MaterialTheme.typography.bodyLarge, color = DarkBlue, textAlign = TextAlign.Center)
+                Text(gesture, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onBackground, textAlign = TextAlign.Center)
             }
         }
 
@@ -435,7 +475,7 @@ fun HandSpeakScreen(
                 .clickable(enabled = connected, onClick = onRepeatClick),
             contentAlignment = Alignment.Center
         ) {
-            Icon(Icons.Default.Replay, null, modifier = Modifier.size(40.dp), tint = DarkBlue)
+            Icon(Icons.Default.Replay, null, modifier = Modifier.size(40.dp), tint = MaterialTheme.colorScheme.onBackground)
         }
 
         Spacer(modifier = Modifier.height(32.dp))
@@ -446,7 +486,6 @@ fun HandSpeakScreen(
         Spacer(modifier = Modifier.height(40.dp))
 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
-            // Home button removed as requested
             BottomCircleButton(Icons.Default.History) { onNavigate(Screen.History) }
             BottomCircleButton(Icons.Default.Settings) { onNavigate(Screen.Settings) }
         }
@@ -464,7 +503,7 @@ fun HistoryScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(BgBeige)
+            .background(MaterialTheme.colorScheme.background)
             .padding(24.dp, vertical = 40.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -475,11 +514,11 @@ fun HistoryScreen(
                     .size(40.dp)
                     .clickable { onBack() },
                 shape = CircleShape,
-                color = Color.White,
+                color = MaterialTheme.colorScheme.surface,
                 shadowElevation = 2.dp
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = DarkBlue, modifier = Modifier.size(24.dp))
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = MaterialTheme.colorScheme.onBackground, modifier = Modifier.size(24.dp))
                 }
             }
             Text(
@@ -487,7 +526,7 @@ fun HistoryScreen(
                 modifier = Modifier.align(Alignment.Center),
                 style = MaterialTheme.typography.displaySmall,
                 fontFamily = FontFamily.Serif,
-                color = DarkBlue
+                color = MaterialTheme.colorScheme.onBackground
             )
         }
         
@@ -498,7 +537,7 @@ fun HistoryScreen(
                 .fillMaxWidth()
                 .weight(1f)
                 .clip(RoundedCornerShape(24.dp))
-                .background(MutedBlue)
+                .background(MaterialTheme.colorScheme.surfaceVariant)
                 .padding(16.dp)
         ) {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -527,7 +566,7 @@ fun HistoryScreen(
 fun HistoryCard(item: HistoryItem, onSpeak: () -> Unit, onDelete: () -> Unit) {
     Card(
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
         Row(
@@ -535,7 +574,7 @@ fun HistoryCard(item: HistoryItem, onSpeak: () -> Unit, onDelete: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(item.text, fontWeight = FontWeight.Medium, fontSize = 16.sp, color = DarkBlue)
+                Text(item.text, fontWeight = FontWeight.Medium, fontSize = 16.sp, color = MaterialTheme.colorScheme.onBackground)
                 Text(item.time, fontSize = 12.sp, color = Color.Gray)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -559,8 +598,31 @@ fun SettingsScreen(
     onReset: () -> Unit,
     onBack: () -> Unit
 ) {
+    var showResetDialog by remember { mutableStateOf(false) }
+
+    if (showResetDialog) {
+        AlertDialog(
+            onDismissRequest = { showResetDialog = false },
+            title = { Text("Reset Settings?") },
+            text = { Text("This will revert all settings to their default values.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onReset()
+                    showResetDialog = false
+                }) {
+                    Text("Yes", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetDialog = false }) {
+                    Text("No")
+                }
+            }
+        )
+    }
+
     Column(
-        modifier = Modifier.fillMaxSize().background(BgBeige).padding(24.dp, vertical = 40.dp),
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(24.dp, vertical = 40.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(modifier = Modifier.fillMaxWidth()) {
@@ -570,11 +632,11 @@ fun SettingsScreen(
                     .size(40.dp)
                     .clickable { onBack() },
                 shape = CircleShape,
-                color = Color.White,
+                color = MaterialTheme.colorScheme.surface,
                 shadowElevation = 2.dp
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = DarkBlue, modifier = Modifier.size(24.dp))
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = MaterialTheme.colorScheme.onBackground, modifier = Modifier.size(24.dp))
                 }
             }
             Text(
@@ -582,28 +644,36 @@ fun SettingsScreen(
                 modifier = Modifier.align(Alignment.Center),
                 style = MaterialTheme.typography.displaySmall,
                 fontFamily = FontFamily.Serif,
-                color = DarkBlue
+                color = MaterialTheme.colorScheme.onBackground
             )
         }
         
         Spacer(modifier = Modifier.height(40.dp))
         
-        SettingsDropdownRow("Language", language, listOf("English", "Hindi", "Spanish"), onLanguageChange)
+        SettingsDropdownRow("Language", language, listOf("English", "Hindi", "Marathi", "Tamil", "Telugu"), onLanguageChange)
         SettingsDropdownRow("Voice Type", voiceType, listOf("Male", "Female"), onVoiceTypeChange)
         SettingsDropdownRow("Font Size", fontSize, listOf("Small", "Medium", "Large"), onFontSizeChange)
         
         Row(
-            modifier = Modifier.fillMaxWidth().height(60.dp).padding(vertical = 8.dp).clip(RoundedCornerShape(12.dp)).background(Color.White).padding(horizontal = 16.dp),
+            modifier = Modifier.fillMaxWidth().height(60.dp).padding(vertical = 8.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surface).padding(horizontal = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text("Theme", fontWeight = FontWeight.Bold, color = DarkBlue)
+            Text("Theme", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
             Switch(checked = theme, onCheckedChange = onThemeChange, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = MutedGreen))
         }
         
         Spacer(modifier = Modifier.weight(1f))
         
-        Text("Reset", modifier = Modifier.clickable { onReset() }, style = MaterialTheme.typography.displaySmall, fontFamily = FontFamily.Serif, color = DarkBlue)
+        Button(
+            onClick = { showResetDialog = true },
+            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surface),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth().height(56.dp),
+            elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp)
+        ) {
+            Text("Reset", style = MaterialTheme.typography.titleMedium, fontFamily = FontFamily.Serif, color = MaterialTheme.colorScheme.onBackground)
+        }
     }
 }
 
@@ -613,26 +683,33 @@ fun SettingsDropdownRow(label: String, selectedValue: String, options: List<Stri
     var expanded by remember { mutableStateOf(false) }
     
     Row(
-        modifier = Modifier.fillMaxWidth().height(64.dp).padding(vertical = 4.dp).clip(RoundedCornerShape(12.dp)).background(Color.White).padding(horizontal = 16.dp),
+        modifier = Modifier.fillMaxWidth().height(64.dp).padding(vertical = 4.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surface).padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Text(label, fontWeight = FontWeight.Bold, color = DarkBlue)
+        Text(label, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
         
         Box {
             Surface(
                 onClick = { expanded = true },
                 shape = RoundedCornerShape(8.dp),
-                color = BgBeige.copy(alpha = 0.5f)
+                color = MaterialTheme.colorScheme.background.copy(alpha = 0.5f)
             ) {
                 Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(selectedValue, fontSize = 14.sp)
-                    Icon(Icons.Default.ArrowDropDown, null)
+                    Text(selectedValue, fontSize = 14.sp, color = MaterialTheme.colorScheme.onBackground)
+                    Icon(Icons.Default.ArrowDropDown, null, tint = MaterialTheme.colorScheme.onBackground)
                 }
             }
-            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenu(
+                expanded = expanded, 
+                onDismissRequest = { expanded = false },
+                modifier = Modifier.background(MaterialTheme.colorScheme.surface)
+            ) {
                 options.forEach { option ->
-                    DropdownMenuItem(text = { Text(option) }, onClick = { onValueChange(option); expanded = false })
+                    DropdownMenuItem(
+                        text = { Text(option, color = MaterialTheme.colorScheme.onBackground) }, 
+                        onClick = { onValueChange(option); expanded = false }
+                    )
                 }
             }
         }
@@ -642,18 +719,18 @@ fun SettingsDropdownRow(label: String, selectedValue: String, options: List<Stri
 @Composable
 fun ControlSlider(label: String, value: Float, onValueChange: (Float) -> Unit, range: ClosedFloatingPointRange<Float> = 0f..1f) {
     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, modifier = Modifier.width(100.dp), style = MaterialTheme.typography.bodyMedium, color = Color.Black)
+        Text(label, modifier = Modifier.width(100.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onBackground)
         Slider(
             value = value, onValueChange = onValueChange, valueRange = range, modifier = Modifier.weight(1f),
-            colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = DarkBlue.copy(alpha = 0.7f), inactiveTrackColor = MutedGreen)
+            colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = MaterialTheme.colorScheme.primary, inactiveTrackColor = MutedGreen)
         )
     }
 }
 
 @Composable
 fun BottomCircleButton(icon: ImageVector, onClick: () -> Unit) {
-    Surface(modifier = Modifier.size(50.dp).clickable { onClick() }, shape = CircleShape, color = Color.White, shadowElevation = 4.dp) {
-        Box(contentAlignment = Alignment.Center) { Icon(icon, null, tint = Color.Black, modifier = Modifier.size(24.dp)) }
+    Surface(modifier = Modifier.size(50.dp).clickable { onClick() }, shape = CircleShape, color = MaterialTheme.colorScheme.surface, shadowElevation = 4.dp) {
+        Box(contentAlignment = Alignment.Center) { Icon(icon, null, tint = MaterialTheme.colorScheme.onBackground, modifier = Modifier.size(24.dp)) }
     }
 }
 
