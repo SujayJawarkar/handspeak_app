@@ -13,6 +13,7 @@ import android.speech.tts.TextToSpeech
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -95,6 +96,11 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private var fontSize by mutableStateOf("Large")
     private var isDarkTheme by mutableStateOf(false)
 
+    // Speech automation states
+    private var lastSpokenGesture: String? = null
+    private var lastSpeechTime: Long = 0
+    private val speechCooldown = 2000L // 2 seconds cooldown for repeating same gesture
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -105,6 +111,11 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
         setContent {
             GestureGloveAppTheme(darkTheme = isDarkTheme) {
+                // Handle system back gesture
+                BackHandler(enabled = currentScreen != Screen.Home) {
+                    currentScreen = Screen.Home
+                }
+
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = BgBeige
@@ -283,11 +294,22 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun processGestureData(rawData: String) {
-        val gesture = gestureMap[rawData] ?: "Unknown: $rawData"
+        val cleanData = rawData.uppercase()
+        val gesture = gestureMap[cleanData] ?: "Unknown: $rawData"
         currentGesture = gesture
-        if (gestureMap.containsKey(rawData)) {
+
+        val currentTime = System.currentTimeMillis()
+        // Automatic Speech Logic: speak if it's a new gesture or enough time has passed
+        if (gesture != lastSpokenGesture || (currentTime - lastSpeechTime > speechCooldown)) {
             speakText(gesture)
-            addToHistory(gesture)
+            
+            // Only add to history if it's a recognized gesture
+            if (gestureMap.containsKey(cleanData)) {
+                addToHistory(gesture)
+            }
+            
+            lastSpokenGesture = gesture
+            lastSpeechTime = currentTime
         }
     }
 
@@ -304,6 +326,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             connectionStatus = "Disconnected"
         }
         currentGesture = "Recognized text will appear here"
+        lastSpokenGesture = null
     }
 
     private fun cleanup() {
@@ -327,7 +350,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             tts.setSpeechRate(speechSpeed)
             val params = Bundle()
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume)
-            tts.speak(text, TextToSpeech.QUEUE_FLUSH, params, "GestureID")
+            // Use QUEUE_ADD to speak continuously without interrupting previous text
+            tts.speak(text, TextToSpeech.QUEUE_ADD, params, "GestureID")
         }
     }
 
